@@ -1,4 +1,3 @@
-import xgboost as xgb
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -98,12 +97,11 @@ def get_ewma_revenue(test_report_date, alpha, s):
     return ewma
 
 
-def cal_industry_ratio(test_report_date, year, return_every=False):
-    '''
+def cal_industry_ratio(test_report_date, year):
+    """
     计算行业调整指数
     return_every = True 时， 返回元组（ind_dict, ticker_dict）
-    '''
-    # industry_pool = get_quarter_cumul_income(test_report_date, cumul=False)['industry'].unique()
+    """
 
     q1 = pd.DataFrame()
     q2 = pd.DataFrame()
@@ -154,10 +152,61 @@ def cal_industry_ratio(test_report_date, year, return_every=False):
     for i in range(4):
         industry_ratio_map[i] = data_classified_by_quarter[i].groupby('industry').mean()
 
-    if return_every == False:
-        return industry_ratio_map
-    else:
-        return industry_ratio_map, data_classified_by_quarter
+
+    return industry_ratio_map
+
+
+def cal_ticker_ratio(test_report_date, year):
+    """
+    calculate ticker-ratio
+    返回的list里的DataFrames以ticker为index
+    """
+    q1 = pd.DataFrame()
+    q2 = pd.DataFrame()
+    q3 = pd.DataFrame()
+    q4 = pd.DataFrame()
+    data_classified_by_quarter = [q1, q2, q3, q4]
+
+    for y in range(year):
+        sum_data = pd.DataFrame()
+        for i in range(1, 5):
+            back_q_num = y * 4 + i
+            prev_report_date = get_report_date(test_report_date, -back_q_num)
+            quarter = get_quarter(prev_report_date)
+            revenue_data = get_quarter_cumul_income(prev_report_date, cumul=False)[['ticker', 'quarter_revenue']]
+
+            # 生成总数
+            if i == 1:
+                sum_data = revenue_data[['ticker', 'quarter_revenue']]
+            else:
+                sum_data = pd.merge(sum_data, revenue_data[['ticker', 'quarter_revenue']], on='ticker')
+                sum_data['quarter_revenue'] = sum_data['quarter_revenue_x'] + sum_data['quarter_revenue_y']
+                sum_data.drop(['quarter_revenue_x', 'quarter_revenue_y'], axis=1, inplace=True)
+
+        sum_data.rename(columns={'quarter_revenue': 'sum'}, inplace=True)
+        for i in range(1, 5):
+            back_q_num = y * 4 + i
+            prev_report_date = get_report_date(test_report_date, -back_q_num)
+            quarter = get_quarter(prev_report_date)
+            revenue_data = get_quarter_cumul_income(prev_report_date, cumul=False)[['ticker', 'quarter_revenue']]
+            revenue_data = pd.merge(revenue_data, sum_data, on='ticker')
+            revenue_data['ratio'] = revenue_data['quarter_revenue'] / revenue_data['sum']
+
+            if y == 0:
+                data_classified_by_quarter[quarter - 1] = revenue_data
+            else:
+                data_classified_by_quarter[quarter - 1] = pd.concat([data_classified_by_quarter[i - 1], revenue_data],
+                                                                    axis=0)
+
+    d1 = pd.DataFrame()
+    d2 = pd.DataFrame()
+    d3 = pd.DataFrame()
+    d4 = pd.DataFrame()
+    ticker_ratio_map = [d1, d2, d3, d4]
+    for i in range(4):
+        ticker_ratio_map[i] = data_classified_by_quarter[i].groupby('ticker').mean()
+
+    return ticker_ratio_map
 
 
 def get_adjusted_ttm(test_report_date, year):
@@ -211,7 +260,8 @@ def get_adjusted_ttm(test_report_date, year):
 
 
 def get_adjusted_again_ttm(test_report_date, year, ttm_term=4):
-    ind_ratio_map, every_ticker_map = cal_industry_ratio(test_report_date, year, return_every=True)
+    ind_ratio_map= cal_ticker_ratio(test_report_date, year)
+    every_ticker_map = cal_ticker_ratio(test_report_date, year)
     prev_report_dates = [get_report_date(test_report_date, -i) for i in range(1, ttm_term+1)]
 
     ret = pd.DataFrame()  # 用于存放分季度的数据
@@ -219,9 +269,11 @@ def get_adjusted_again_ttm(test_report_date, year, ttm_term=4):
         quarter = get_quarter(report_date)
         ind_map = ind_ratio_map[quarter-1]
         ticker_map = every_ticker_map[quarter-1]
+
         # 读取revenue数据
         quarterly_income = get_quarter_cumul_income(report_date, cumul=False)[['ticker', 'quarter_revenue']]
-        quarterly_income.rename(columns={'quarter_revenue': quarter}, inplace=True)
+        # quarterly_income.rename(columns={'quarter_revenue': quarter}, inplace=True)
+
         # 读取市值与产业数据
         # ticker_property = get_ticker_property(quarterly_income['ticker'].tolist(),
         #                                       get_report_date(test_report_date, -1), ['industry', 'market_value'])
@@ -232,24 +284,68 @@ def get_adjusted_again_ttm(test_report_date, year, ttm_term=4):
         # quarterly_income = pd.merge(quarterly_income, market_value, on='ticker')
 
         # 根据ticker_map中是否包含数据中的ticker将数据分成两组
-        in_data = quarterly_income[quarterly_income['ticker'].isin(ticker_map['ticker'])]
-        not_in_data = quarterly_income.drop(in_data)
 
-        return
+        in_data = quarterly_income[quarterly_income['ticker'].isin(ticker_map.index)].copy()  # 找得到对应ticker的数据
+        not_in_data = quarterly_income.drop(in_data.index).copy()  # 找不到dict中对应ticker的数据，用行业数据代替
 
-    # 这里还没有写完
-    return
+        # 处理in_data
+        in_data['ratio_based_weight'] = in_data['ticker'].map(ticker_map['ratio'].to_dict())
+        # 处理not_in_data
+        if not_in_data.empty:
+            processed_data = in_data
+
+        else:
+            """
+                ticker_property = get_ticker_property(not_in_data['ticker'].tolist(),
+                         get_report_date(test_report_date, -1), ['industry', 'market_value'])
+                industry = ticker_property[['ticker', 'industry']]
+                not_in_data = pd.merge(not_in_data, industry, on='ticker')
+
+                not_in_data['ratio'] = not_in_data['ticker'].map(ind_map['ratio'].to_dict())
+                not_in_data.drop('industry', axis=1, inplace=True)
+            """
+
+            not_in_data['ratio_based_weight'] = 0.25
+
+            # 纵向合并两个DF
+            processed_data = pd.concat([in_data, not_in_data])
+
+        if ret.empty:
+            ret = processed_data
+            ret['ttm'] = ret['quarter_revenue'] * ret['ratio_based_weight']
+            ret.drop('ratio_based_weight', axis=1, inplace=True)
+        else:
+            ret = pd.merge(ret, processed_data, on='ticker')
+            ret['ttm'] += ret['quarter_revenue'] * ret['ratio_based_weight']
+            ret.drop('ratio_based_weight', axis=1, inplace=True)
+        ret.rename(columns={'quarter_revenue': 'quarter_revenue_' + report_date}, inplace=True)
+
+    report_date_dt = datetime.strptime(test_report_date, '%Y-%m-%d')
+    quarter = report_date_dt.month // 4 + 1
+    ret['ttm'] = ret['ttm'] * quarter / (ttm_term/4.0)
+
+    # 添加 行业和市值 信息
+    ticker_property = get_ticker_property(ret['ticker'].tolist(),
+                                          get_report_date(test_report_date, -1), ['industry', 'market_value'])
+    industry = ticker_property[['ticker', 'industry']]
+    market_value = ticker_property[['ticker', 'market_value']]
+    ret = pd.merge(ret, industry, on='ticker')
+    ret = pd.merge(ret, market_value, on='ticker')
+
+    # 去掉所有na
+
+    return ret
 
 def revenue_predict(pred_report_date, tickers, alpha, year):
     """
     预测本期的营业收入
-
     如果要预测的ticker不在计算ttm的DataFrame中，那么以行业中市值相近的ticker替代
     """
     # 获取营业收入的ttm值
     # ret = get_ewma_revenue(pred_report_date, alpha, 4)  # 此处有一超参数
     # ret = get_revenue_ttm(pred_report_date)
-    ret = get_adjusted_ttm(pred_report_date, year)
+    # ret = get_adjusted_ttm(pred_report_date, year)
+    ret = get_adjusted_again_ttm(pred_report_date, year, 4)
     ret = ret[ret['ticker'].isin(tickers)]
     if len(tickers) > len(ret['ticker']):
         missing_tickers = [ticker for ticker in tickers if ticker not in ret['ticker'].tolist()]
@@ -307,12 +403,17 @@ if __name__ == '__main__':
         ttm_model('2016-12-31', i, year=0)
     """
     # ttm_model('2016-06-30', 0.55, year=0)
-    # ttm_model('2017-03-31', 0, 0)
-    # """
-    get_adjusted_again_ttm('2017-03-31', 4)
+    # ttm_model('2017-03-31', 0, 4)
+
+    """
+    
     for year in range(2, 7, 1):
         print('year =', year)
         ttm_model('2017-03-31', 0, year)
-    # """
+    """
     #  print(get_ewma_revenue('2017-12-31', 0.4, 8))
+
+    for year in range(2, 7, 1):
+        print('year=', year)
+        ttm_model('2017-12-31', 0, year)
     # -- * --
