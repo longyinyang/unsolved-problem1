@@ -93,15 +93,23 @@ def revenue_predict(pred_report_date, tickers, alpha=0.5, ttm_term=4, year=4, in
             market_value = missing_tickers_property[missing_tickers_property['ticker'] == ticker]['market_value'].values[0]
             industry_info = missing_tickers_property[missing_tickers_property['ticker'] == ticker]['industry'].values[0]
             temp = ret[ret['industry'] == industry_info]
-
+            closest_df = temp.iloc[(temp['market_value'] - market_value).abs().argsort()[:1]].copy()
+            closest_df.iloc[0, 0] = ticker
             if temp.empty:
                 # unsolved_ticker.append(ticker)
                 continue
             else:
                 closest_df = temp.iloc[(temp['market_value'] - market_value).abs().argsort()[:1]].copy()
                 closest_df.iloc[0, 0] = ticker
-                # try:
-                 #   last_q_revenue_data =
+
+                quarter = get_quarter(pred_report_date)
+                last_report_date = get_report_date(pred_report_date, -1)
+                last_quarter_revenue = get_quarter_cumul_income(last_report_date, cumul=False)['ticker'==ticker]
+                if quarter == 1:
+                    closest_df['ewma'] = last_quarter_revenue.iloc[0, 0]
+                else:
+                    last_quarter_cumul_revenue = get_quarter_cumul_income(last_report_date)['ticker'==ticker]
+                    closest_df['ewma'] = last_quarter_revenue.iloc[0, 0] + last_quarter_cumul_revenue.iloc[0, 0]
                 ret = pd.concat([ret, closest_df])
 
         # ret.drop(unsolved_ticker, inplace=True)
@@ -137,8 +145,8 @@ def ttm_model(test_report_date, alpha, ttm_term, year, industry=None):
 
 
 if __name__ == '__main__':
-    # report_dates = [get_report_date('2018-03-31', -i) for i in range(1, 9)]
-    report_dates = ['2017-06-30']
+    report_dates = [get_report_date('2018-03-31', -i) for i in range(1, 9)]
+    # report_dates = ['2017-06-30']
     t_term = 4  # 这也是一个超参数
     print('ttm_term=', t_term)
     models = ['ewma_0.4', 'ewma_0.45','ewma_0.5', 'ewma_0.55', 'ewma_0.6', 'ewma_0.65', 'ewma_0.7']
