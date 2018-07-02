@@ -112,6 +112,7 @@ def main(train_report_dates, test_report_date, industry):
                                                    merge_cash_flow_statement=False,
                                                    merge_income_statement=False)
     test['ticker'] = test['ticker'].map(lambda x: str(x)[:6])
+    test.dropna(inplace=True)
     drop_x_cols = ['quarter_revenue',
                    'market_value',
                    'ticker',
@@ -131,13 +132,11 @@ def main(train_report_dates, test_report_date, industry):
     # rf = LinearRegression()
     # rf.fit(train_x, train_y)
     # model = xgb.XGBRegressor()
-    poly_2 = PolynomialFeatures(degree=2)
-    train_x_poly = poly_2.fit_transform(train_x)
-    test_x_poly = poly_2.transform(test_x)
+
 
     model = LinearRegression()
-    model.fit(train_x_poly, train_y)
-    pred_y_scaled = model.predict(test_x_poly)
+    model.fit(train_x, train_y)
+    pred_y_scaled = model.predict(test_x)
 
     pred_y = scaler.inverse_transform(pred_y_scaled.reshape(-1, 1))
 
@@ -145,12 +144,12 @@ def main(train_report_dates, test_report_date, industry):
     pred_y_df = pd.DataFrame(pred_y, columns=['linear_model'])
     pred_y_df['ticker'] = test['ticker']
 
-    pred_y_merge = pd.merge(pred_y_df, pred_y_by_ewma, on='ticker', how='outer')
+    pred_y_merge = pd.merge(pred_y_df, pred_y_by_ewma, on='ticker')
     pred_y_merge['merge'] = pred_y_merge['linear_model'] + pred_y_merge['ewma']
 
     pred_y_merge['result'] = \
         pred_y_merge.apply(lambda x:
-                           x['linear_model']+x['ewma'] if np.abs(x['linear_model']-x['ewma'])/x['ewma']<0.5 else x['ewma'], axis=1)
+                           0.3 * x['linear_model']+ 0.7 * x['ewma'] if np.abs(x['linear_model']-x['ewma'])/x['ewma']<0.5 else x['ewma'], axis=1)
 
     test_error = weighted_error(pred_y=pred_y_merge['result'].values,
                                 test_y=test['quarter_revenue'].values,
